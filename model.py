@@ -206,30 +206,30 @@ def feature_transform_regularizer(trans):
     return loss
 
 if __name__ == '__main__':
-	sim_data = paddle.uniform([32, 3, 2500])
-	trans = STN3d()
-	out = trans(sim_data)
-	print('stn', out.shape)
-	print('loss', feature_transform_regularizer(out))
-	
-	sim_data_64d = paddle.uniform([32, 64, 2500])
-	trans = STNkd(k=64)
-	out = trans(sim_data_64d)
-	print('stn64d', out.shape)
-	print('loss', feature_transform_regularizer(out))
-	
-	pointfeat = PointNetfeat(global_feat=True)
-	out, _, _ = pointfeat(sim_data)
-	print('global feat', out.shape)
-	
-	pointfeat = PointNetfeat(global_feat=False)
-	out, _, _ = pointfeat(sim_data)
-	print('point feat', out.shape)
-	
-	cls = PointNetCls(k=5)
-	out, _, _ = cls(sim_data)
-	print('class', out.shape)
-	
-	seg = PointNetDenseCls(k=3)
-	out, _, _ = seg(sim_data)
-	print('seg', out.shape)
+    sim_data = paddle.uniform([32, 3, 2500])
+    trans = STN3d()
+    out = trans(sim_data)
+    print('stn', out.shape)
+    print('loss', feature_transform_regularizer(out))
+
+    sim_data_64d = paddle.uniform([32, 64, 2500])
+    trans = STNkd(k=64)
+    out = trans(sim_data_64d)
+    print('stn64d', out.shape)
+    print('loss', feature_transform_regularizer(out))
+
+    pointfeat = PointNetfeat(global_feat=True)
+    out, _, _ = pointfeat(sim_data)
+    print('global feat', out.shape)
+
+    pointfeat = PointNetfeat(global_feat=False)
+    out, _, _ = pointfeat(sim_data)
+    print('point feat', out.shape)
+
+    cls = PointNetCls(k=5)
+    out, _, _ = cls(sim_data)
+    print('class', out.shape)
+
+    seg = PointNetDenseCls(k=3)
+    out, _, _ = seg(sim_data)
+    print('seg', out.shape)
