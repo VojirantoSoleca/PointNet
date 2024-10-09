@@ -2,6 +2,13 @@ import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
 import numpy as np
+import argparse
+import os
+import random
+import paddle.optimizer as optim
+import paddle.io
+from paddle.io import DataLoader
+from tqdm import tqdm
 
 class STN3d(nn.Layer):
     def __init__(self):
@@ -205,31 +212,185 @@ def feature_transform_regularizer(trans):
 
     return loss
 
+class ModelNetDataset(io.Dataset):
+    def __init__(self, root, npoints=2500, split='modelnet40_train', data_augmentatiion=True):
+        self.npoints = npoints
+        self.root = root
+        self.split = split
+        self.data_augmentation = data_augmentatiion
+
+        self.fns = []
+        with open(os.path.join(root, '{}.txt'.format(self.split)), 'r') as f:
+            for line in f:
+                self.fns.append(line.strip())
+        
+        self.cat = {}
+        with open('/home/aistudio/work/modelnet.txt', 'r') as f:
+            for line in f:
+                ls = line.strip().split()
+                self.cat[ls[0]] = int(ls[1])
+        print(self.cat)
+        self.classes = list(self.cat.keys())
+        print(self.classes)
+    
+    def __getitem__(self, index):
+        fn = self.fns[index]
+        cls = fn[:-5]
+
+        plyData = [[], [], []]
+        with open(os.path.join(self.root, cls + '/' + fn + '.txt'), 'r') as f:
+            for line in f:
+                line = line.strip()
+                temp = line.split(',')
+                plyData[0].append(float(temp[0]))
+                plyData[0].append(float(temp[3]))
+                plyData[1].append(float(temp[1]))
+                plyData[1].append(float(temp[4]))
+                plyData[2].append(float(temp[2]))
+                plyData[2].append(float(temp[5]))
+
+        pts = np.vstack([plyData[0], plyData[1], plyData[2]]).T
+        choice = np.random.choice(len(pts), self.npoints, replace=True)
+        point_set = pts[choice, :]
+
+        point_set = point_set - np.expand_dims(np.mean(point_set, axis=0), 0)
+        dist = np.max(np.sqrt(np.sum(point_set ** 2, axis=1)), 0)
+        point_set = point_set / dist
+
+        if self.data_augmentation:
+            theta = np.random.uniform(0, np.pi * 2)
+            rotation_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+            point_set[:, [0, 2]] = point_set[:, [0, 2]].dot(rotation_matrix)
+            point_set += np.random.normal(0, 0.02, size=point_set.shape)
+        
+        point_set = paddle.to_tensor(point_set.astype(np.float32))
+        cls = paddle.to_tensor(self.cat[cls]).astype(np.int64)
+
+        return point_set, cls
+    
+    def __len__(self):
+        return len(self.fns)
+
+def gen_modelnet_id(root):
+    classes = []
+    with open(os.path.join(root, 'modelnet40_train.txt'), 'r') as f:
+        for line in f:
+            classes.append(line.strip()[:-5])
+    classes = np.unique(classes)
+    with open('/home/aistudio/work/modelnet.txt', 'w') as f:
+        for i in range(len(classes)):
+            f.write('{}\t{}\n'.format(classes[i], i))
+
 if __name__ == '__main__':
-    sim_data = paddle.uniform([32, 3, 2500])
-    trans = STN3d()
-    out = trans(sim_data)
-    print('stn', out.shape)
-    print('loss', feature_transform_regularizer(out))
+    args = {
+    'batchSize': 32,
+    'num_points': 2500,
+    'workers': 4,
+    'nepoch': 250,
+    'outf': 'cls',
+    'model': '',
+    'dataset': '/home/aistudio/data/data72849/modelnet40_normal_resampled',
+    'dataset_type': 'shapenet',
+    'feature_transform': False
+}
 
-    sim_data_64d = paddle.uniform([32, 64, 2500])
-    trans = STNkd(k=64)
-    out = trans(sim_data_64d)
-    print('stn64d', out.shape)
-    print('loss', feature_transform_regularizer(out))
+    opt = argparse.Namespace(**args)
 
-    pointfeat = PointNetfeat(global_feat=True)
-    out, _, _ = pointfeat(sim_data)
-    print('global feat', out.shape)
+    print(opt)
 
-    pointfeat = PointNetfeat(global_feat=False)
-    out, _, _ = pointfeat(sim_data)
-    print('point feat', out.shape)
+    opt.manualSeed = random.randint(1, 10000)  # fix seed
+    print("Random Seed: ", opt.manualSeed)
+    random.seed(opt.manualSeed)
+    paddle.seed(opt.manualSeed)
 
-    cls = PointNetCls(k=5)
-    out, _, _ = cls(sim_data)
-    print('class', out.shape)
+    dataset = ModelNetDataset(
+        root=opt.dataset,
+        npoints=opt.num_points,
+        split='modelnet40_train')
 
-    seg = PointNetDenseCls(k=3)
-    out, _, _ = seg(sim_data)
-    print('seg', out.shape)
+    test_dataset = ModelNetDataset(
+        root=opt.dataset,
+        split='modelnet40_test',
+        npoints=opt.num_points)
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=opt.batchSize,
+        shuffle=True,
+        num_workers=int(opt.workers))
+
+    testdataloader = DataLoader(
+        test_dataset,
+        batch_size=opt.batchSize,
+        shuffle=True,
+        num_workers=int(opt.workers))
+
+    print(len(dataset), len(test_dataset))
+    num_classes = len(dataset.classes)
+    print('classes', num_classes)
+
+    try:
+        os.makedirs(opt.outf)
+    except OSError:
+        pass
+
+    classifier = PointNetCls(k=num_classes, feature_transform=opt.feature_transform)
+
+    if opt.model != '':
+        classifier.set_state_dict(paddle.load(opt.model))
+        classifier.eval()
+
+    optimizer = optim.Adam(learning_rate=0.001, beta1=0.9, beta2=0.999, parameters=classifier.parameters())
+    scheduler = optim.lr.StepDecay(learning_rate=0.001, step_size=20, gamma=0.5)
+    # classifier = paddle.to_tensor(classifier)
+
+
+    num_batch = len(dataset) / opt.batchSize
+
+    for epoch in range(opt.nepoch):
+        scheduler.step()
+        for i, data in enumerate(dataloader, 0):
+            points, target = data
+            points = points.transpose([0, 2, 1])
+            points, target = paddle.to_tensor(points), paddle.to_tensor(target)
+            optimizer.clear_grad()
+            classifier.train()
+            pred, trans, trans_feat = classifier(points)
+            loss = F.cross_entropy(pred, target)
+            if opt.feature_transform:
+                loss += feature_transform_regularizer(trans_feat) * 0.001
+            loss.backward()
+            optimizer.step()
+            pred_choice = paddle.argmax(pred, axis=1)
+            correct = paddle.equal(pred_choice, target).sum().numpy().item()
+            print('[%d: %d/%d] train loss: %f accuracy: %f' % (epoch, i, num_batch, loss.numpy().item(), correct / float(opt.batchSize)))
+
+            if i % 10 == 0:
+                j, data = next(enumerate(testdataloader, 0))
+                points, target = data
+                points = points.transpose([0, 2, 1])
+                points, target = paddle.to_tensor(points), paddle.to_tensor(target)
+                classifier.eval()
+                pred, _, _ = classifier(points)
+                loss = F.cross_entropy(pred, target)
+                pred_choice = paddle.argmax(pred, axis=1)
+                correct = paddle.equal(pred_choice, target).sum().numpy().item()
+                print('[%d: %d/%d] %s loss: %f accuracy: %f' % (epoch, i, num_batch, 'test', loss.numpy().item(), correct / float(opt.batchSize)))
+
+        paddle.save(classifier.state_dict(), '%s/cls_model_%d.pdparams' % (opt.outf, epoch))
+
+    total_correct = 0
+    total_testset = 0
+    for i, data in tqdm(enumerate(testdataloader, 0)):
+        points, target = data
+        points = points.transpose([0, 2, 1])
+        points, target = paddle.to_tensor(points), paddle.to_tensor(target)
+        classifier.eval()
+        pred, _, _ = classifier(points)
+        pred_choice = paddle.argmax(pred, axis=1)
+        correct = paddle.equal(pred_choice, target).sum().numpy().item()
+        total_correct += correct
+        total_testset += points.shape[0]
+
+    print("final accuracy {}".format(total_correct / float(total_testset)))
+    
